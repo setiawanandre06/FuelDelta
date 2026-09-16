@@ -2,8 +2,8 @@
 
 A Python 3.3.5 project that will read Assetto Corsa telemetry and coach
 drivers to save fuel while minimizing lap-time loss. The internal telemetry
-model and a fake source are available. Assetto Corsa integration, fuel analysis,
-and a UI are not implemented.
+model, a fake source, and a fuel consumption analyzer are available.
+Assetto Corsa integration and a UI are not implemented.
 
 ## Layout
 
@@ -48,6 +48,68 @@ start at 1, lap time is elapsed milliseconds in the current lap, and normalized
 position is lap progress in [0, 1). Future adapters must normalize their input;
 the model does not validate or clamp values. These conventions do not claim any
 mapping to AC fields. The fake data is illustrative, not a physics simulation.
+
+### Fuel consumption
+
+`FuelConsumptionAnalyzer` in `fueldelta.analysis` accepts normalized telemetry
+through `update(sample, lap_valid=True)`. It records completed valid laps and
+returns their consumption in liters; otherwise it returns `None`. It depends
+only on the internal model, not on the source or UI.
+
+For already measured complete laps:
+
+```python
+from fueldelta.analysis import FuelConsumptionAnalyzer
+
+analyzer = FuelConsumptionAnalyzer()
+analyzer.record_lap(120.0, 117.52)  # approximately 2.48 liters
+print(analyzer.last_lap_consumption)
+print(analyzer.average_consumption)
+print(analyzer.rolling_average(n=5))
+```
+
+To feed a source, call `analyzer.update(source.read())` for each observation
+until the source raises `StopIteration`. `tests/test_fuel_consumption.py` includes
+a complete 10-lap `FakeTelemetrySource` scenario sampled once per second,
+including the start of lap 11 to close lap 10.
+
+- `consumption_history` is an immutable snapshot of all accepted consumption
+  values in the current session, in completion order. Rejected laps are omitted.
+- `last_lap_consumption` means the latest accepted lap; rejected laps do not
+  overwrite it. `average_consumption` uses the full session history.
+- `rolling_average(n=5)` uses the latest n accepted laps, or fewer if necessary.
+  Empty statistics return `None`; zero consumption is a valid measurement.
+  A nonpositive or noninteger window raises `ValueError`.
+- The first observation establishes a baseline. A first sample with
+  `lap_time_ms != 0` is treated as a partial lap and excluded. Thereafter a
+  consecutive lap-number increment closes the previous lap, using the new
+  sample's fuel as its end fuel and the next lap's start fuel. These are sampled
+  estimates; no exact crossing interpolation or AC field mapping is assumed.
+- Any observed fuel increase invalidates the pending lap, including refueling
+  whose net lap consumption would otherwise be positive. History is retained
+  after pit refueling, and measurement resumes from the next lap boundary.
+- `lap_valid=False` applies to the sample's own lap and stays invalid for that
+  lap. To reject the previous lap before passing its closing boundary, call
+  `invalidate_current_lap()`. Validity is supplied externally, not inferred from
+  invented telemetry fields.
+- Pass `None` for missing telemetry. Missing/negative/nonfinite fuel, invalid
+  timestamp/lap metadata, repeated timestamps, gaps exceeding
+  `max_sample_gap_seconds` (default 2.0), and skipped lap numbers discard affected
+  measurements. After a missing boundary, a baseline is established at an exact
+  lap-start sample or a subsequent observed boundary; incomplete laps are skipped.
+- A timestamp or lap-number rollback automatically clears history as a session
+  restart. Input must be ordered; old packets cannot be distinguished from a
+  restart without a session ID. Call `reset_session()` for explicit restarts,
+  including those whose counters do not roll back.
+- Manual `record_lap(start_fuel_liters, end_fuel_liters, valid=True,
+  refueled=False)` rejects invalid endpoints, fuel increases, invalid laps, and
+  declared refueling. Callers must report refueling hidden between endpoints.
+  Likewise, additions entirely between telemetry samples cannot be detected.
+  Use manual recording or automatic updates for a given lap, not both, to avoid
+  double counting. No partial final lap is recorded when a source ends.
+
+All calculations use unrounded liters; round only for display. No dependencies
+or Assetto Corsa integration are required.
 
 ### Setup and tests
 
