@@ -4,7 +4,8 @@ A Python 3.3.5 project that will read Assetto Corsa telemetry and coach
 drivers to save fuel while minimizing lap-time loss. The internal telemetry
 model, a fake source, a fuel consumption analyzer, and a command-line stint
 calculator, an ongoing-stint fuel budget engine, and a read-only Assetto Corsa
-shared-memory adapter are available. A graphical UI is not implemented.
+shared-memory adapter, CSV session recorder, and repeatable offline replay are
+available. A graphical UI is not implemented.
 
 ## Layout
 
@@ -360,6 +361,87 @@ to AC mappings. A live smoke test on this workstation read six consecutive
 samples over 2.5 seconds from `rss_gtm_lanzo_v10` at `rt_sebring`: about 49.99 L,
 1500 RPM, lap 1, stationary. This verifies a live connection and updating physics;
 driving, lap transitions, and game restarts still need in-game validation.
+
+### Session recording and offline replay
+
+With AC live and unpaused, record at 10 Hz (20 Hz is also supported by the CLI):
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path src).Path
+.\.venv\Scripts\python.exe -m fueldelta.ui.record_cli --target-minutes 60 --hz 10
+```
+
+Ctrl+C finalizes the recording. `--seconds 30` limits the capture to approximately
+30 seconds; `--output data` selects the parent directory. The target duration is
+metadata for the planned stint, not an automatic capture stop. Capture frequency
+is best effort, not a hard real-time guarantee; slow reads do not generate a burst
+of backfilled samples.
+
+Each capture creates a new directory, for example:
+
+```text
+data/2026-09-20_spa_bmw_m4_gt3_<unique-id>/
+    telemetry.csv
+    session.json
+```
+
+The date is UTC. Names are sanitized and a unique suffix prevents overwriting
+another session on the same day. Generated recordings are ignored by Git.
+Metadata contains `schema_version: 1`, raw car/track identifiers, `initial_fuel`,
+`target_duration_minutes`, configured `sample_rate_hz`, UTC creation time, sample
+count, first/last source timestamps, status, and stop reason. Initial fuel is
+measured from the first recorded sample, not entered manually.
+
+CSV version 1 stores every internal field, with no display rounding:
+
+```text
+timestamp,fuel_liters,speed_kmh,throttle,brake,rpm,gear,lap_number,lap_time_ms,normalized_position
+```
+
+Lap numbers remain one-based and gear retains the internal -1/0/1+ convention.
+Timestamps are preserved from the source; for AC this is the reader observation
+epoch, not absolute race time. A capture can start mid-lap; the analyzer still
+discards that partial lap. Recording writes every sample passed to `record()`;
+`capture_session()` controls source polling frequency separately.
+
+No game is needed to replay a directory (or its `telemetry.csv`):
+
+```python
+from fueldelta.analysis import FuelConsumptionAnalyzer
+from fueldelta.telemetry import ReplayTelemetrySource
+
+path = "data/2026-09-20_spa_bmw_m4_gt3_<unique-id>"  # use your actual directory
+with ReplayTelemetrySource(path) as source:
+    for run in range(3):
+        source.reset()
+        analyzer = FuelConsumptionAnalyzer()
+        while True:
+            try:
+                sample = source.read()
+            except StopIteration:
+                break
+            analyzer.update(sample)
+        print(run + 1, analyzer.consumption_history, analyzer.average_consumption)
+```
+
+Replay is deterministic and unpaced: `read()` returns the next sample immediately
+while preserving its recorded timestamp. `reset()` rewinds an open source;
+opening another source creates an independent replay. EOF raises `StopIteration`.
+Invalid headers/schema, malformed rows, invalid field values, or backwards
+timestamps raise `ValueError`; row errors identify the CSV line. A failed replay
+must be reset or repaired, so corrupted data is never silently skipped. Header
+aliases such as `fuel`/`lap` from arbitrary third-party CSVs are not supported.
+
+The generic `SessionRecorder` accepts `TelemetrySample` objects and can also
+record fake/custom sources. Neither persistence nor replay performs fuel math.
+`capture_session` uses source `car`/`track` metadata and, when available,
+`session_generation` to stop before a new epoch is mixed into the recording.
+On pause, stale/unavailable telemetry, or an I/O error, capture stops; restart the
+command to create a new session file. No missing samples are fabricated. A normal
+stop or exception closes the CSV and finalizes metadata; every CSV row is flushed.
+Abrupt process termination or power loss may leave incomplete trailing data and
+metadata with status `recording` and outdated counts. CSV data remains authoritative;
+this is not a transactional or power-loss-proof recorder.
 
 ### Setup and tests
 
