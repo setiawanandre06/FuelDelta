@@ -4,7 +4,8 @@
 class TelemetrySample(object):
     """One observation, without any dependency on game memory structures.
 
-    timestamp is elapsed seconds from the source's session start.
+    timestamp is elapsed seconds from the source's session/observation epoch.
+    Sources must document their epoch; it need not be the game's session start.
     throttle and brake are fractions in [0, 1]; normalized_position is lap
     progress in [0, 1). lap_number is one-based; lap_time_ms is elapsed time
     in the current lap. gear uses -1 for reverse, 0 for neutral, and 1+ for

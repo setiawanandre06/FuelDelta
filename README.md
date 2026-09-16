@@ -3,8 +3,8 @@
 A Python 3.3.5 project that will read Assetto Corsa telemetry and coach
 drivers to save fuel while minimizing lap-time loss. The internal telemetry
 model, a fake source, a fuel consumption analyzer, and a command-line stint
-calculator, and an ongoing-stint fuel budget engine are available. Assetto Corsa
-integration and a graphical UI are not implemented.
+calculator, an ongoing-stint fuel budget engine, and a read-only Assetto Corsa
+shared-memory adapter are available. A graphical UI is not implemented.
 
 ## Layout
 
@@ -277,6 +277,89 @@ Like the stint calculator, this assumes constant average pace and consumption,
 without whole-lap rounding or a final lap after the timer. Fuel saving may change
 pace; reevaluate with updated averages. There is no AC-specific data access or
 business logic in the command-line presentation.
+
+### Live Assetto Corsa telemetry (Windows)
+
+Start original Assetto Corsa, load a Practice/Race session, and enter the car
+with the game unpaused. Run this externally from the FuelDelta directory:
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path src).Path
+.\.venv\Scripts\python.exe -m fueldelta.ui.telemetry_cli
+```
+
+Use `--samples 1` for a single snapshot, or `--interval 0.2 --samples 10` for
+ten snapshots. Ctrl+C stops the reader. This does not require enabling an in-game
+Python app. Use a normal Windows Python installation with ctypes available.
+
+The CLI prints connection confirmation only after a valid live snapshot, then
+car/track identifiers, fuel, speed, pedals, RPM, and the one-based lap number.
+Names come directly from metadata (for example `bmw_m4_gt3`), not a friendly-name
+catalog. Exit code 1 means unavailable telemetry; 2 means invalid CLI arguments.
+On pause, replay, missing mappings, or stale physics, resume the driving session
+and rerun the CLI. It deliberately stops rather than displaying stale readings.
+
+```python
+from fueldelta.telemetry import AssettoCorsaTelemetrySource, TelemetryUnavailable
+
+try:
+    with AssettoCorsaTelemetrySource() as source:
+        sample = source.read()  # ordinary TelemetrySample
+        print(source.car, source.track, sample.fuel_liters)
+except TelemetryUnavailable as error:
+    print(error)
+```
+
+The adapter has no fuel calculation logic. A consuming loop can pass samples to
+`FuelConsumptionAnalyzer.update`; on unavailable data it must signal
+`analyzer.update(None)` instead of reusing the last sample. Lap validity is still
+external; this adapter does not infer it from penalties or invent an AC field.
+
+The packed prefixes follow the supplied
+[AC sim_info reference](https://github.com/ac-custom-shaders-patch/acc-extension-apps/blob/master/apps/python/AccExtHelper/sim_info.py).
+Only necessary prefixes are read: physics 32 bytes, graphics 252 bytes, static
+200 bytes. Integers/floats are 32-bit, packing is 4 bytes, and text uses explicit
+UTF-16LE code units. These are original AC layouts, not ACC/EVO layouts.
+
+| AC value | Internal value |
+| --- | --- |
+| physics `fuel`, `speedKmh` | `fuel_liters`, `speed_kmh` |
+| physics `gas`, `brake`, `rpms` | `throttle`, `brake`, `rpm` |
+| physics `gear - 1` | `gear` (-1 reverse, 0 neutral, 1+ forward) |
+| graphics `completedLaps + 1` | `lap_number` |
+| graphics `iCurrentTime` | `lap_time_ms` |
+| graphics `normalizedCarPosition` | `normalized_position` (1.0 wraps to 0.0) |
+| static `carModel`, `track` | source metadata |
+
+Connection uses ctypes with Windows `OpenFileMappingW` and
+[`MapViewOfFile`](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile)
+in read-only mode. Unlike a create-or-open named mmap, it cannot create an empty
+AC mapping when the game is absent. Handles/views are released by `close()` or
+the context manager. Nothing connects at import time.
+
+Timestamp is host monotonic time since the reader's first accepted observation,
+not true elapsed race time. A metadata/session change, lap counter rollback, or
+same-lap timer rollback starts a new observation epoch and increments
+`session_generation`. Consumers should reset analyzer/stint state when that
+generation changes. AC exposes no unique session ID in the prefixes used here;
+not every restart can be detected. Reconnect on explicit game/session changes.
+Host time includes pauses; do not use it directly as budget-engine stint elapsed
+time without an application-level active-session clock.
+
+The reader retries five times if consecutive copies differ. This reduces torn
+reads but cannot make separately published pages atomic. Physics packet IDs
+unchanged for 2 seconds are stale (`stale_seconds` is configurable). Repeated
+packets before that timeout can return repeated observations. Status must be
+live, required metadata must be populated, and mapped numeric fields must be
+valid. A closed game may leave an existing view readable briefly, so this is
+not proof that the producer process remains alive.
+
+Offline tests verify byte offsets, field normalization, stale/non-live data,
+cleanup, and a real Windows mapping under a unique test name. They never write
+to AC mappings. A live smoke test on this workstation read six consecutive
+samples over 2.5 seconds from `rss_gtm_lanzo_v10` at `rt_sebring`: about 49.99 L,
+1500 RPM, lap 1, stationary. This verifies a live connection and updating physics;
+driving, lap transitions, and game restarts still need in-game validation.
 
 ### Setup and tests
 

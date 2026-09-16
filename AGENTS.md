@@ -29,7 +29,8 @@ Do not put business logic inside UI code.
 
 Use a src layout with importable code under `src/fueldelta` and tests under
 `tests`. Keep package imports free of telemetry connections and UI startup.
-The initial scaffold must not implement Assetto Corsa integration.
+Assetto Corsa shared-memory access belongs only in telemetry adapters; analysis,
+strategy, and UI must consume internal models rather than AC memory structures.
 
 ## Development Rules
 
