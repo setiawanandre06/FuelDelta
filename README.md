@@ -1,8 +1,9 @@
 # FuelDelta
 
 A Python 3.3.5 project that will read Assetto Corsa telemetry and coach
-drivers to save fuel while minimizing lap-time loss. This is an initial
-scaffold only: telemetry integration, calculations, and a UI are not implemented.
+drivers to save fuel while minimizing lap-time loss. The internal telemetry
+model and a fake source are available. Assetto Corsa integration, fuel analysis,
+and a UI are not implemented.
 
 ## Layout
 
@@ -14,6 +15,41 @@ scaffold only: telemetry integration, calculations, and a UI are not implemented
 - `tests`: pytest tests.
 
 ## Development
+
+### Internal telemetry
+
+Consumers depend on `fueldelta.models.TelemetrySample` and a source's `read()`
+contract, never on Assetto Corsa memory structures. Python 3.3.5 uses a plain
+class with type comments instead of a dataclass, and `TelemetrySource` is an
+abstract base class instead of `typing.Protocol`. Duck-typed sources with the
+same `read()` contract can also be used.
+
+```python
+from fueldelta.telemetry import FakeTelemetrySource
+
+source = FakeTelemetrySource()
+while True:
+    try:
+        sample = source.read()
+    except StopIteration:
+        break
+    print(sample.timestamp, sample.fuel_liters)
+```
+
+The default source yields three deterministic samples without waiting. Pass an
+iterable of `TelemetrySample` objects to supply your own scenario; an empty
+iterable yields nothing. Exhaustion raises `StopIteration`; invalid items raise
+`TypeError` when read. Custom samples are returned without copying.
+
+Internal conventions: timestamp is seconds since session start, fuel is liters,
+speed is km/h, throttle/brake are fractions from 0 to 1, RPM is engine revolutions
+per minute, gear is -1 for reverse / 0 for neutral / 1+ for forward, lap numbers
+start at 1, lap time is elapsed milliseconds in the current lap, and normalized
+position is lap progress in [0, 1). Future adapters must normalize their input;
+the model does not validate or clamp values. These conventions do not claim any
+mapping to AC fields. The fake data is illustrative, not a physics simulation.
+
+### Setup and tests
 
 In an isolated environment, with `python` pointing to your chosen interpreter:
 
