@@ -1,0 +1,2 @@
+# Python 3.3 uses setup.py for packaging and pytest.ini for tests.
+# No modern build backend is required by this legacy-compatible scaffold.
