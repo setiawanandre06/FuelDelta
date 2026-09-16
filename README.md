@@ -3,8 +3,8 @@
 A Python 3.3.5 project that will read Assetto Corsa telemetry and coach
 drivers to save fuel while minimizing lap-time loss. The internal telemetry
 model, a fake source, a fuel consumption analyzer, and a command-line stint
-calculator are available. Assetto Corsa integration and a graphical UI are not
-implemented.
+calculator, and an ongoing-stint fuel budget engine are available. Assetto Corsa
+integration and a graphical UI are not implemented.
 
 ## Layout
 
@@ -184,6 +184,99 @@ This projection assumes constant average pace and consumption for the target
 duration. It does not round up to whole race laps or include a final lap after
 the timer, pit time, formation laps, or changing conditions. Account for extra
 fuel using the configurable reserve. No telemetry integration is required.
+
+### Fuel budget engine
+
+`FuelBudgetEngine` evaluates whether current consumption can reach the stint
+target and calculates the maximum affordable consumption. It uses actual fuel,
+remaining time, average pace, and average fuel/lap. Starting fuel is not required:
+the predictive budget is recalculated from the current tank, including after
+refueling, rather than extrapolated linearly from the initial tank.
+
+```python
+from fueldelta.strategy import FuelBudgetEngine
+
+engine = FuelBudgetEngine(target_duration_seconds=3600, safety_laps=0)
+budget = engine.evaluate(
+    remaining_fuel_liters=77.0,
+    elapsed_seconds=1200.0,
+    average_lap_seconds=72.5,
+    consumption_liters_per_lap=2.42,
+)
+print(budget.status)                # INSUFFICIENT_FUEL
+print(budget.required_consumption)  # approximately 2.326 L/lap
+print(budget.need_to_save)          # approximately 0.094 L/lap
+```
+
+Use an analyzer's valid `rolling_average()` or `average_consumption` for current
+consumption. Missing averages (`None`) raise `ValueError`, never a false safe
+result. A known zero consumption is supported. The engine keeps configuration
+only; call `evaluate` again as fuel, elapsed time, pace, or consumption changes.
+Elapsed time is relative to this stint; callers reset it for a new stint and
+must supply trustworthy averages after invalid laps or a session restart.
+
+Command-line example from the project root in PowerShell:
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path src).Path
+.\.venv\Scripts\python.exe -m fueldelta.ui.budget_cli --fuel 77 --minutes 60 --elapsed-minutes 20 --lap-time 72.5 --consumption 2.42 --safety-laps 0
+```
+
+```text
+FUEL BUDGET
+Remaining fuel:       77.00 L
+Laps remaining:       33.10
+Required fuel:        80.11 L
+Delta:                -3.11 L
+Projected finish:     -3.11 L
+Safety reserve:       0.00 L
+Current consumption:  2.420 L/lap
+Required consumption: 2.326 L/lap
+Need to save:         0.094 L/lap
+Status:               INSUFFICIENT_FUEL
+Current consumption will not reach the target duration.
+```
+
+For remaining time `T`, lap time `t`, current consumption `c`, available fuel `F`,
+safety laps `s`, and fixed reserve liters `r`:
+
+- Predicted laps remaining `L = T / t` (fractional laps).
+- Required fuel `= (L + s) * c + r`, including reserve.
+- Delta `= F - required fuel`; negative means behind the predictive budget.
+- Projected finish fuel `= F - L * c`, excluding reserve.
+- Required consumption `= (F - r) / (L + s)`, the maximum affordable liters/lap.
+- Need to save `= max(0, c - required consumption)`.
+
+Safety defaults match the stint calculator: `safety_laps=1.0` and
+`safety_fuel_liters=0.0`, independently configurable and additive. The example
+explicitly disables reserve. Safety laps are valued at the current consumption
+for the projection and at the proposed reduced consumption for the saving target.
+If fixed reserve exceeds available fuel, `required_consumption` and `need_to_save`
+are `None`, and `can_meet_budget_by_saving` is false: even zero consumption cannot
+fund that reserve. This flag describes arithmetic feasibility, not whether a
+driver can physically achieve the proposed consumption or maintain the same pace.
+
+The immutable `fueldelta.models.FuelBudget` result includes fuel, remaining time,
+lap estimate, consumption targets, `can_finish_target`, and these statuses:
+
+| Status | Meaning |
+| --- | --- |
+| `ON_BUDGET` | Current consumption covers the target and reserve |
+| `INSUFFICIENT_FUEL` | Current consumption cannot reach the target duration |
+| `BELOW_RESERVE` | Target is reachable, but configured reserve is not covered |
+| `TARGET_REACHED` | Target time has elapsed; no future driving is budgeted |
+
+At/after the target, remaining time/laps/required fuel/reserve and saving are zero,
+projected finish and delta equal actual fuel, and required consumption is `None`.
+`can_finish_target` is then true only in the sense that no future driving remains;
+the engine does not infer historical success. Status uses unrounded values, and
+negative projections express deficits. Invalid values raise `ValueError`; CLI
+input errors exit with code 2, while all valid budgets exit with code 0.
+
+Like the stint calculator, this assumes constant average pace and consumption,
+without whole-lap rounding or a final lap after the timer. Fuel saving may change
+pace; reevaluate with updated averages. There is no AC-specific data access or
+business logic in the command-line presentation.
 
 ### Setup and tests
 
