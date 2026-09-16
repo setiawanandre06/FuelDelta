@@ -2,8 +2,9 @@
 
 A Python 3.3.5 project that will read Assetto Corsa telemetry and coach
 drivers to save fuel while minimizing lap-time loss. The internal telemetry
-model, a fake source, and a fuel consumption analyzer are available.
-Assetto Corsa integration and a UI are not implemented.
+model, a fake source, a fuel consumption analyzer, and a command-line stint
+calculator are available. Assetto Corsa integration and a graphical UI are not
+implemented.
 
 ## Layout
 
@@ -110,6 +111,79 @@ including the start of lap 11 to close lap 10.
 
 All calculations use unrounded liters; round only for display. No dependencies
 or Assetto Corsa integration are required.
+
+### Race/stint fuel projection
+
+From the project root in PowerShell, using the development environment:
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path src).Path
+.\.venv\Scripts\python.exe -m fueldelta --fuel 120 --minutes 60 --lap-time 78.5 --consumption 2.5 --safety-laps 1
+```
+
+Alternatively, after an editable install, use `python -m fueldelta` without
+setting `PYTHONPATH`. `--lap-time 1:18.500` also accepts minutes and seconds.
+
+```text
+Projected laps:       45.86
+Projected fuel:       114.65 L
+Finish fuel:          5.35 L
+Safety reserve:       2.50 L
+Fuel incl. reserve:   117.15 L
+Fuel margin:          2.85 L
+Target duration:      60.00 min
+Status:               SAFE
+```
+
+Calculation lives in `fueldelta.strategy`, independently of CLI presentation:
+
+```python
+from fueldelta.strategy import project_stint
+
+projection = project_stint(
+    fuel_liters=120.0,
+    target_duration_seconds=3600.0,
+    average_lap_seconds=78.5,
+    consumption_liters_per_lap=2.5,
+    safety_laps=1.0,
+    safety_fuel_liters=0.0,
+)
+print(projection.status)
+```
+
+The result is `fueldelta.models.StintProjection` with these conventions:
+
+| Field | Meaning |
+| --- | --- |
+| `estimated_laps` | Target seconds / average lap seconds, including fractional laps |
+| `estimated_fuel_required` | Projected laps * consumption in liters/lap, excluding reserve |
+| `estimated_finish_fuel` | Available fuel minus projected consumption, in liters |
+| `safety_fuel_required` | Safety laps * consumption + additional safety liters |
+| `total_fuel_required` | Projected consumption plus safety reserve, in liters |
+| `fuel_margin` | Available fuel minus total requirement, in liters |
+| `estimated_stint_duration` | Requested target duration in seconds, even for an unsafe projection |
+| `status` | `SAFE` when unrounded fuel margin is >= 0; otherwise `UNSAFE` |
+
+`safety_laps` defaults to 1.0 and can be fractional or zero. The independent
+`safety_fuel_liters` defaults to zero and is additive. For a liters-only reserve,
+set `--safety-laps 0 --safety-fuel-liters 3`.
+
+Negative finish fuel or margin expresses a projected deficit; it is not clamped
+to zero. A stint can have positive finish fuel and still be `UNSAFE` because it
+does not preserve the configured reserve. Status is calculated before display
+rounding. CLI exit code 0 means a valid calculation (including `UNSAFE`); invalid
+arguments use exit code 2.
+
+Inputs must be finite numbers; duration and lap time must be positive. Fuel,
+consumption, and reserves may be zero but not negative. Invalid or missing inputs
+raise `ValueError`; an analyzer average of `None` must not be replaced with zero.
+Pass `analyzer.average_consumption` or `analyzer.rolling_average()` as consumption
+once valid lap history exists. Average lap time is supplied separately.
+
+This projection assumes constant average pace and consumption for the target
+duration. It does not round up to whole race laps or include a final lap after
+the timer, pit time, formation laps, or changing conditions. Account for extra
+fuel using the configurable reserve. No telemetry integration is required.
 
 ### Setup and tests
 
