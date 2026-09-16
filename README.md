@@ -5,7 +5,8 @@ drivers to save fuel while minimizing lap-time loss. The internal telemetry
 model, a fake source, a fuel consumption analyzer, and a command-line stint
 calculator, an ongoing-stint fuel budget engine, and a read-only Assetto Corsa
 shared-memory adapter, CSV session recorder, and repeatable offline replay are
-available. A graphical UI is not implemented.
+available, along with lap-level pace versus fuel comparisons. A graphical UI is
+not implemented.
 
 ## Layout
 
@@ -442,6 +443,70 @@ stop or exception closes the CSV and finalizes metadata; every CSV row is flushe
 Abrupt process termination or power loss may leave incomplete trailing data and
 metadata with status `recording` and outdated counts. CSV data remains authoritative;
 this is not a transactional or power-loss-proof recorder.
+
+### Pace versus fuel analysis
+
+`PaceFuelAnalyzer` stores paired measurements for complete valid laps and
+compares them against an explicitly selected race-pace baseline. Times are
+seconds, and fuel is **consumed liters per lap**, not remaining tank fuel.
+
+```python
+from fueldelta.analysis import PaceFuelAnalyzer
+
+analyzer = PaceFuelAnalyzer(baseline_lap_seconds=78.5, baseline_fuel_liters=2.5)
+for number, seconds, liters in [
+    (21, 78.422, 2.53),
+    (22, 78.511, 2.49),
+    (23, 78.762, 2.38),
+    (24, 78.910, 2.32),
+]:
+    analyzer.record_lap(number, seconds, liters)
+
+best = analyzer.best_efficient_lap(max_pace_loss_seconds=0.30)
+if best is not None:
+    print(best.lap.lap_number)       # 23
+    print(best.pace_loss_seconds)    # approximately 0.262
+    print(best.fuel_saved_liters)    # approximately 0.12
+```
+
+Each immutable `LapPerformance` in `lap_history` preserves the lap number,
+time, and fuel consumption. `compare_lap(number)` returns a `PaceFuelComparison`:
+
+| Metric | Calculation |
+| --- | --- |
+| `pace_loss_seconds` | Lap time minus baseline lap time |
+| `fuel_saved_liters` | Baseline fuel minus lap fuel |
+| `fuel_saved_percentage` | Fuel saved / baseline fuel * 100 |
+| `fuel_saved_per_second_lost` | Fuel saved / positive pace loss |
+
+For baseline **78.50 s / 2.50 L** and candidate **78.80 s / 2.37 L**, the result
+is **+0.30 s**, **0.13 L saved**, **5.2% saved**, and approximately **0.433 L
+saved per second lost**. Calculations retain full precision; round for display.
+Negative pace loss means faster; negative fuel saving means greater consumption.
+Percentage is `None` for zero baseline fuel, and the efficiency ratio is `None`
+for equal/faster pace. These cases do not produce infinity or divide by zero.
+
+`efficient_laps(max_pace_loss_seconds=0.5, min_fuel_saved_liters=0.0)` returns
+strictly fuel-saving laps within the pace limit, including faster laps. It ranks
+by greatest fuel saving, then least pace loss, then lap number. Both thresholds
+are configurable and inclusive; zero saving itself never qualifies.
+`best_efficient_lap` returns the first result, or `None` if no lap qualifies.
+Using a 0.50-second limit in the example selects lap 24 instead of lap 23.
+
+This initial API accepts completed lap measurements; it does not yet automatically
+pair lap times with consumption from a live or replay telemetry stream. Callers
+must supply time and fuel for the same lap and exclude pit/refueling, partial,
+invalid, and missing-data laps via `valid=False`, `complete=False`, or
+`refueled=True`. Excluded laps return `None`. Malformed numeric inputs and duplicate
+lap numbers raise `ValueError`; unknown comparison IDs raise `KeyError`.
+`reset_session()` clears lap history while preserving the configured baseline;
+create a new analyzer to select a new baseline for different conditions.
+
+History is held in memory; the raw session CSV remains the persistent telemetry
+record. Choose a representative baseline from comparable clean race laps. The
+comparison identifies observed trade-offs, not proof that fuel saving caused a
+time change: traffic, tires, weather, and fuel load are not modeled. No machine
+learning or additional dependencies are used.
 
 ### Setup and tests
 
